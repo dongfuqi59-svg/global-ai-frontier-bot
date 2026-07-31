@@ -1,0 +1,77 @@
+name: Daily Feishu AI Digest
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      trigger_source:
+        description: "Trigger source, for example feishu_command"
+        required: false
+        default: "manual"
+      command:
+        description: "Command text that triggered this workflow"
+        required: false
+        default: ""
+      feishu_event_id:
+        description: "Feishu event id for traceability"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-feishu-ai-digest
+  cancel-in-progress: false
+
+jobs:
+  send-digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APP_TIMEZONE: Asia/Shanghai
+      ARTICLE_RETENTION_DAYS: "180"
+      DIGEST_ITEM_LIMIT: "10"
+      FEISHU_SIGNING_SECRET: ${{ secrets.FEISHU_SIGNING_SECRET }}
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      LLM_ENABLED: "false"
+      LOG_LEVEL: INFO
+      SOURCES_CONFIG_PATH: config/sources.yaml
+      STATE_FILE_PATH: data/bot-state.json
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run daily digest
+        run: python -m src.cli --action daily --state-file "$STATE_FILE_PATH" --no-env-file
+
+      - name: Commit state
+        if: always()
+        run: |
+          if [ ! -f "$STATE_FILE_PATH" ]; then
+            echo "State file not found; nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$STATE_FILE_PATH"
+          if git diff --cached --quiet; then
+            echo "State unchanged."
+            exit 0
+          fi
+          git commit -m "chore: update Feishu digest state [skip ci]"
+          git push

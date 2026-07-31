@@ -1,0 +1,10 @@
+-r requirements.txt
+mypy==1.15.0
+pytest==8.3.5
+pytest-asyncio==0.25.3
+ruff==0.9.7
+types-PyYAML==6.0.12.20241230
+iniconfig==2.3.0
+mypy_extensions==1.1.0
+packaging==26.2
+pluggy==1.6.0

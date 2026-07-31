@@ -1,0 +1,322 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Global AI frontier digest bot for Feishu
+
+Parameters:
+  AppTimezone:
+    Type: String
+    Default: Asia/Shanghai
+    AllowedValues: [Asia/Shanghai]
+  FeishuWebhookUrl:
+    Type: String
+    Default: ""
+    NoEcho: true
+  FeishuSigningSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+  LlmBaseUrl:
+    Type: String
+    Default: ""
+  LlmApiKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+  LlmModel:
+    Type: String
+    Default: ""
+  LlmEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+  DigestItemLimit:
+    Type: Number
+    Default: 10
+    MinValue: 5
+    MaxValue: 20
+  ArticleRetentionDays:
+    Type: Number
+    Default: 180
+    MinValue: 1
+  CollectConcurrency:
+    Type: Number
+    Default: 8
+    MinValue: 1
+    MaxValue: 20
+  HttpTimeoutSeconds:
+    Type: Number
+    Default: 20
+    MinValue: 1
+  LlmTimeoutSeconds:
+    Type: Number
+    Default: 45
+    MinValue: 1
+  ReadCapacityUnits:
+    Type: Number
+    Default: 1
+    MinValue: 1
+  WriteCapacityUnits:
+    Type: Number
+    Default: 1
+    MinValue: 1
+  LogLevel:
+    Type: String
+    Default: INFO
+    AllowedValues: [DEBUG, INFO, WARNING, ERROR]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [arm64]
+    Timeout: 300
+    MemorySize: 512
+    Tracing: Active
+    Environment:
+      Variables:
+        APP_TIMEZONE: !Ref AppTimezone
+        ARTICLES_TABLE: !Ref ArticlesTable
+        DIGESTS_TABLE: !Ref DigestsTable
+        DELIVERIES_TABLE: !Ref DeliveriesTable
+        FEISHU_WEBHOOK_URL: !Ref FeishuWebhookUrl
+        FEISHU_SIGNING_SECRET: !Ref FeishuSigningSecret
+        DIGEST_ITEM_LIMIT: !Ref DigestItemLimit
+        ARTICLE_RETENTION_DAYS: !Ref ArticleRetentionDays
+        COLLECT_CONCURRENCY: !Ref CollectConcurrency
+        HTTP_TIMEOUT_SECONDS: !Ref HttpTimeoutSeconds
+        LLM_BASE_URL: !Ref LlmBaseUrl
+        LLM_API_KEY: !Ref LlmApiKey
+        LLM_MODEL: !Ref LlmModel
+        LLM_TIMEOUT_SECONDS: !Ref LlmTimeoutSeconds
+        LLM_ENABLED: !Ref LlmEnabled
+        LOG_LEVEL: !Ref LogLevel
+        SOURCES_CONFIG_PATH: config/sources.yaml
+
+Resources:
+  AppFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+      BuildArchitecture: arm64
+    Properties:
+      CodeUri: .
+      Handler: src.handlers.app.lambda_handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:BatchGetItem
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:Query
+                - dynamodb:UpdateItem
+              Resource:
+                - !GetAtt ArticlesTable.Arn
+                - !Join ["", [!GetAtt ArticlesTable.Arn, "/index/*"]]
+                - !GetAtt DigestsTable.Arn
+                - !GetAtt DeliveriesTable.Arn
+
+  AppFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AppFunction}
+      RetentionInDays: 7
+
+  SchedulerInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeDigestFunction
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt AppFunction.Arn
+
+  CollectSchedule:
+    Type: AWS::Scheduler::Schedule
+    DependsOn: AppFunctionLogGroup
+    Properties:
+      FlexibleTimeWindow: {Mode: "OFF"}
+      ScheduleExpression: cron(0/20 * * * ? *)
+      ScheduleExpressionTimezone: !Ref AppTimezone
+      Target:
+        Arn: !GetAtt AppFunction.Arn
+        RoleArn: !GetAtt SchedulerInvokeRole.Arn
+        Input: '{"action":"collect"}'
+        RetryPolicy: {MaximumEventAgeInSeconds: 300, MaximumRetryAttempts: 1}
+
+  FinalCollectSchedule:
+    Type: AWS::Scheduler::Schedule
+    DependsOn: AppFunctionLogGroup
+    Properties:
+      FlexibleTimeWindow: {Mode: "OFF"}
+      ScheduleExpression: cron(50 9 * * ? *)
+      ScheduleExpressionTimezone: !Ref AppTimezone
+      Target:
+        Arn: !GetAtt AppFunction.Arn
+        RoleArn: !GetAtt SchedulerInvokeRole.Arn
+        Input: '{"action":"final_collect"}'
+        RetryPolicy: {MaximumEventAgeInSeconds: 300, MaximumRetryAttempts: 1}
+
+  PrepareDigestSchedule:
+    Type: AWS::Scheduler::Schedule
+    DependsOn: AppFunctionLogGroup
+    Properties:
+      FlexibleTimeWindow: {Mode: "OFF"}
+      ScheduleExpression: cron(55 9 * * ? *)
+      ScheduleExpressionTimezone: !Ref AppTimezone
+      Target:
+        Arn: !GetAtt AppFunction.Arn
+        RoleArn: !GetAtt SchedulerInvokeRole.Arn
+        Input: '{"action":"prepare_digest"}'
+        RetryPolicy: {MaximumEventAgeInSeconds: 300, MaximumRetryAttempts: 1}
+
+  PublishDigestSchedule:
+    Type: AWS::Scheduler::Schedule
+    DependsOn: AppFunctionLogGroup
+    Properties:
+      FlexibleTimeWindow: {Mode: "OFF"}
+      ScheduleExpression: cron(0 10 * * ? *)
+      ScheduleExpressionTimezone: !Ref AppTimezone
+      Target:
+        Arn: !GetAtt AppFunction.Arn
+        RoleArn: !GetAtt SchedulerInvokeRole.Arn
+        Input: '{"action":"publish_digest"}'
+        RetryPolicy: {MaximumEventAgeInSeconds: 300, MaximumRetryAttempts: 0}
+
+  RetryPublishOneSchedule:
+    Type: AWS::Scheduler::Schedule
+    DependsOn: AppFunctionLogGroup
+    Properties:
+      FlexibleTimeWindow: {Mode: "OFF"}
+      ScheduleExpression: cron(2 10 * * ? *)
+      ScheduleExpressionTimezone: !Ref AppTimezone
+      Target:
+        Arn: !GetAtt AppFunction.Arn
+        RoleArn: !GetAtt SchedulerInvokeRole.Arn
+        Input: '{"action":"retry_publish_1"}'
+        RetryPolicy: {MaximumEventAgeInSeconds: 300, MaximumRetryAttempts: 0}
+
+  RetryPublishTwoSchedule:
+    Type: AWS::Scheduler::Schedule
+    DependsOn: AppFunctionLogGroup
+    Properties:
+      FlexibleTimeWindow: {Mode: "OFF"}
+      ScheduleExpression: cron(5 10 * * ? *)
+      ScheduleExpressionTimezone: !Ref AppTimezone
+      Target:
+        Arn: !GetAtt AppFunction.Arn
+        RoleArn: !GetAtt SchedulerInvokeRole.Arn
+        Input: '{"action":"retry_publish_2"}'
+        RetryPolicy: {MaximumEventAgeInSeconds: 300, MaximumRetryAttempts: 0}
+
+  ArticlesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: !Ref ReadCapacityUnits
+        WriteCapacityUnits: !Ref WriteCapacityUnits
+      AttributeDefinitions:
+        - {AttributeName: article_id, AttributeType: S}
+        - {AttributeName: published_partition, AttributeType: S}
+        - {AttributeName: published_at, AttributeType: S}
+        - {AttributeName: processing_status, AttributeType: S}
+        - {AttributeName: first_seen_at, AttributeType: S}
+      KeySchema:
+        - {AttributeName: article_id, KeyType: HASH}
+      GlobalSecondaryIndexes:
+        - IndexName: PublishedAtIndex
+          KeySchema:
+            - {AttributeName: published_partition, KeyType: HASH}
+            - {AttributeName: published_at, KeyType: RANGE}
+          Projection: {ProjectionType: ALL}
+          ProvisionedThroughput:
+            ReadCapacityUnits: !Ref ReadCapacityUnits
+            WriteCapacityUnits: !Ref WriteCapacityUnits
+        - IndexName: ProcessingStatusIndex
+          KeySchema:
+            - {AttributeName: processing_status, KeyType: HASH}
+            - {AttributeName: first_seen_at, KeyType: RANGE}
+          Projection: {ProjectionType: ALL}
+          ProvisionedThroughput:
+            ReadCapacityUnits: !Ref ReadCapacityUnits
+            WriteCapacityUnits: !Ref WriteCapacityUnits
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: false
+      SSESpecification:
+        SSEEnabled: true
+
+  DigestsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: !Ref ReadCapacityUnits
+        WriteCapacityUnits: !Ref WriteCapacityUnits
+      AttributeDefinitions:
+        - {AttributeName: digest_date, AttributeType: S}
+      KeySchema:
+        - {AttributeName: digest_date, KeyType: HASH}
+      SSESpecification:
+        SSEEnabled: true
+
+  DeliveriesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: !Ref ReadCapacityUnits
+        WriteCapacityUnits: !Ref WriteCapacityUnits
+      AttributeDefinitions:
+        - {AttributeName: delivery_id, AttributeType: S}
+      KeySchema:
+        - {AttributeName: delivery_id, KeyType: HASH}
+      SSESpecification:
+        SSEEnabled: true
+
+  LambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Lambda invocation errors; attach an SNS action after deployment
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AppFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  FunctionName:
+    Value: !Ref AppFunction
+  ArticlesTableName:
+    Value: !Ref ArticlesTable
+  DigestsTableName:
+    Value: !Ref DigestsTable
+  DeliveriesTableName:
+    Value: !Ref DeliveriesTable

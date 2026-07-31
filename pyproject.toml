@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools==75.8.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "global-ai-frontier-bot"
+version = "0.1.0"
+description = "全球 AI 前沿资讯飞书机器人"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "boto3==1.36.26",
+  "feedparser==6.0.11",
+  "httpx==0.28.1",
+  "pydantic==2.10.6",
+  "PyYAML==6.0.2",
+]
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+  "integration: local integration tests with fakes",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["src"]
+ignore_missing_imports = true

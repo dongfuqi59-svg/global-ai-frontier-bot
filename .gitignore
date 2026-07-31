@@ -1,0 +1,18 @@
+# The workspace is the user home directory; ignore unrelated hidden state by default.
+/.*
+!/.github/
+!/.github/workflows/
+!/.github/workflows/*.yml
+!/.env.example
+!/.gitignore
+
+__pycache__/
+*.egg-info/
+*.py[cod]
+.coverage
+coverage.xml
+htmlcov/
+data/local-state*.json
+samconfig.toml
+workers/**/.dev.vars
+workers/**/wrangler.toml

@@ -1,0 +1,13 @@
+name = "feishu-command-router"
+main = "src/index.js"
+compatibility_date = "2026-07-31"
+
+[vars]
+GITHUB_OWNER = "your-github-owner"
+GITHUB_REPO = "global-ai-frontier-bot"
+GITHUB_WORKFLOW_FILE = "daily-feishu.yml"
+GITHUB_REF = "main"
+
+# Set these as Cloudflare Worker Secrets, not vars:
+# - FEISHU_VERIFICATION_TOKEN
+# - GITHUB_TOKEN

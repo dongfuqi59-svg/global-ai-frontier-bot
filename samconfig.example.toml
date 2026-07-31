@@ -1,0 +1,20 @@
+version = 0.1
+
+[default.build.parameters]
+cached = true
+parallel = true
+use_container = true
+
+[default.deploy.parameters]
+stack_name = "global-ai-frontier-bot"
+region = "ap-southeast-1"
+resolve_s3 = true
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+parameter_overrides = [
+  "FeishuWebhookUrl=",
+  "FeishuSigningSecret=",
+  "LlmBaseUrl=",
+  "LlmApiKey=",
+  "LlmModel=",
+]
